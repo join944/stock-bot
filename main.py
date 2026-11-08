@@ -1,94 +1,375 @@
+
 import os
-from deep_translator import GoogleTranslator
-import feedparser
+import re
+import html
 import requests
+import feedparser
 import yfinance as yf
+import pandas_market_calendars as mcal
 
-# 1. 환경변수에서 텔레그램 정보 불러오기
-TOKEN = os.environ.get('TELEGRAM_TOKEN')
-CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from deep_translator import GoogleTranslator
 
+
+# =====================================
+# 1. 기본 설정
+# =====================================
+
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+HOLDINGS = {
+    "KODEX 미국나스닥100": {
+        "ticker": "379810.KS",
+        "shares": 40,
+        "index": "^NDX"
+    },
+    "TIGER 글로벌AI사이버보안": {
+        "ticker": "418670.KS",
+        "shares": 7,
+        "index": "CIBR"
+    }
+}
+
+FX_TICKER = "USDKRW=X"
+
+
+# =====================================
+# 2. 미국 증시 마감 시간 확인
+# =====================================
+
+def is_report_time():
+
+    if os.environ.get("FORCE_RUN") == "1":
+        return True
+
+    ny_time = datetime.now(
+        ZoneInfo("America/New_York")
+    )
+
+    calendar = mcal.get_calendar("NYSE")
+
+    schedule = calendar.schedule(
+        start_date=ny_time.date(),
+        end_date=ny_time.date()
+    )
+
+    if schedule.empty:
+        print("미국 증시 휴장일입니다.")
+        return False
+
+    market_close = schedule.iloc[0]["market_close"]
+
+    expected_time = (
+        market_close.to_pydatetime()
+        .astimezone(ZoneInfo("America/New_York"))
+        + timedelta(minutes=15)
+    )
+
+    difference = (
+        ny_time - expected_time
+    ).total_seconds() / 60
+
+    if 0 <= difference <= 20:
+        return True
+
+    print("아직 발송 시간이 아닙니다.")
+    return False
+
+
+# =====================================
+# 3. 주가 데이터 수집
+# =====================================
+
+def get_history(ticker):
+
+    data = yf.Ticker(ticker).history(
+        period="10d",
+        interval="1d",
+        auto_adjust=False
+    )
+
+    if data.empty:
+        raise ValueError(f"{ticker} 데이터 수집 실패")
+
+    close = data["Close"].dropna()
+
+    if len(close) < 2:
+        raise ValueError(f"{ticker} 데이터 부족")
+
+    return close
+
+
+def get_change(ticker):
+
+    close = get_history(ticker)
+
+    previous = float(close.iloc[-2])
+    current = float(close.iloc[-1])
+
+    change = (current / previous - 1) * 100
+
+    return change
+
+
+# =====================================
+# 4. ETF 예상 가격 계산
+# =====================================
 
 def get_stock_data():
-  """보유 해외 ETF의 미국 기초 자산 지수, 환율 및 예상가 계산"""
-  tickers = ['^NDX', 'CIBR', 'USDKRW=X']
-  # 최근 5일 데이터를 받아와서 가장 최신 종가(마감가)와 전일 종가 확보
-  df = yf.download(tickers, period='5d', progress=False)['Close']
 
-  # 데이터프레임에서 값 추출
-  ndx = df['^NDX'].dropna()
-  cibr = df['CIBR'].dropna()
-  krw = df['USDKRW=X'].dropna()
+    fx_change = get_change(FX_TICKER)
 
-  # 나스닥 100
-  ndx_prev = float(ndx.iloc[-2])
-  ndx_curr = float(ndx.iloc[-1])
-  ndx_pct = (ndx_curr - ndx_prev) / ndx_prev * 100
+    fx_history = get_history(FX_TICKER)
+    exchange_rate = float(fx_history.iloc[-1])
 
-  # 글로벌 사이버보안 (CIBR)
-  cibr_prev = float(cibr.iloc[-2])
-  cibr_curr = float(cibr.iloc[-1])
-  cibr_pct = (cibr_curr - cibr_prev) / cibr_prev * 100
+    results = []
 
-  # 환율
-  exchange_rate = float(krw.iloc[-1])
+    for name, info in HOLDINGS.items():
 
-  # [참고] KODEX 미국나스닥100 및 TIGER 글로벌AI사이버보안의 대략적인 전일 기준 국내 종가 기준 예상가 산출
-  # (실제 국내 ETF는 원달러 환율과 기초자산 등락률, 괴리율에 따라 움직입니다)
-  # 임의의 기준 전일 국내가 대비 예상가 변동 반영 (기초지수 등락률 + 환율 변동 복합 반영)
-  estimated_kodex_nasdaq = 10000 * (1 + (ndx_pct / 100))  # 이해를 돕기 위한 예상 추정치 베이스
-  estimated_tiger_cyber = 10000 * (1 + (cibr_pct / 100))
+        domestic_close = get_history(
+            info["ticker"]
+        )
 
-  return {
-      'ndx_pct': ndx_pct,
-      'cibr_pct': cibr_pct,
-      'exchange_rate': exchange_rate,
-  }
+        base_price = float(domestic_close.iloc[-1])
 
+        index_change = get_change(
+            info["index"]
+        )
+
+        # 달러 기준 기초자산 변동률과
+        # 원달러 환율 변동률을 복합 반영
+
+        estimated_change = (
+            (1 + index_change / 100)
+            * (1 + fx_change / 100)
+            - 1
+        ) * 100
+
+        estimated_price = (
+            base_price *
+            (1 + estimated_change / 100)
+        )
+
+        # 국내 ETF 호가 단위에 맞춰 5원 단위 반올림
+        estimated_price = round(
+            estimated_price / 5
+        ) * 5
+
+        shares = info["shares"]
+
+        estimated_value = estimated_price * shares
+
+        results.append({
+            "name": name,
+            "shares": shares,
+            "base_price": base_price,
+            "index_change": index_change,
+            "estimated_change": estimated_change,
+            "estimated_price": estimated_price,
+            "estimated_value": estimated_value
+        })
+
+    return {
+        "exchange_rate": exchange_rate,
+        "fx_change": fx_change,
+        "results": results
+    }
+
+
+# =====================================
+# 5. 미국 증권 뉴스 수집 및 번역
+# =====================================
 
 def get_translated_news():
-  """미국 야후 파이낸스 뉴스를 가져와서 한글로 번역"""
-  news_list = []
-  try:
-    url = 'https://finance.yahoo.com/news/rssindex'
+
+    url = "https://finance.yahoo.com/news/rssindex"
+
     feed = feedparser.parse(url)
-    translator = GoogleTranslator(source='en', target='ko')
 
-    # 상위 3개 뉴스 가져와서 한글 번역
-    for entry in feed.entries[:3]:
-      original_title = entry.title
-      try:
-        translated_title = translator.translate(original_title)
-      except:
-        translated_title = original_title  # 번역 실패시 원문 유지
+    translator = GoogleTranslator(
+        source="en",
+        target="ko"
+    )
 
-      news_list.append(f'• {translated_title}')
-  except Exception as e:
-    news_list.append('• 최신 미국 증권 뉴스를 불러오는 중입니다.')
+    news_list = []
 
-  return '\n'.join(news_list) if news_list else '• 등록된 뉴스가 없습니다.'
+    for entry in feed.entries[:5]:
 
+        title = entry.get("title", "제목 없음")
+
+        description = entry.get(
+            "summary", ""
+        )
+
+        description = re.sub(
+            r"<[^>]+>",
+            " ",
+            description
+        )
+
+        description = html.unescape(
+            description
+        )
+
+        try:
+            translated_title = translator.translate(
+                title[:450]
+            )
+
+            if description.strip():
+                translated_description = translator.translate(
+                    description[:450]
+                )
+            else:
+                translated_description = ""
+
+        except Exception as e:
+            print("번역 오류:", e)
+
+            translated_title = title
+            translated_description = description
+
+        news_list.append(
+            f"• {translated_title}\n"
+            f"  {translated_description[:250]}"
+        )
+
+    if not news_list:
+        return "• 최신 뉴스를 가져오지 못했습니다."
+
+    return "\n\n".join(news_list)
+
+
+# =====================================
+# 6. 텔레그램 메시지 구성
+# =====================================
+
+def create_message(stock_info, news):
+
+    message = (
+        "📊 미국 증시 마감 리포트\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "💱 환율 정보\n"
+        f"원달러 환율: "
+        f"{stock_info['exchange_rate']:,.2f}원\n"
+        f"환율 변동: "
+        f"{stock_info['fx_change']:+.2f}%\n\n"
+        "📈 보유 ETF 예상 가격\n"
+        "━━━━━━━━━━━━━━\n"
+    )
+
+    for item in stock_info["results"]:
+
+        message += (
+            f"\n🔹 {item['name']}\n"
+            f"보유 수량: {item['shares']}주\n"
+            f"직전 국내 종가: "
+            f"{item['base_price']:,.0f}원\n"
+            f"기초지수 등락: "
+            f"{item['index_change']:+.2f}%\n"
+            f"예상 등락률: "
+            f"{item['estimated_change']:+.2f}%\n"
+            f"예상 가격: "
+            f"{item['estimated_price']:,.0f}원\n"
+            f"예상 평가금액: "
+            f"{item['estimated_value']:,.0f}원\n"
+        )
+
+    message += (
+        "\n━━━━━━━━━━━━━━\n"
+        "📰 밤사이 미국 증권 뉴스\n"
+        "━━━━━━━━━━━━━━\n\n"
+        f"{news}\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "※ 예상 가격은 참고용 추정치입니다.\n"
+        "※ 실제 국내 ETF 가격과 차이가 발생할 수 있습니다."
+    )
+
+    return message
+
+
+# =====================================
+# 7. 텔레그램 전송
+# =====================================
+
+def send_telegram(message):
+
+    if not TOKEN or not CHAT_ID:
+        raise ValueError(
+            "텔레그램 환경변수가 설정되지 않았습니다."
+        )
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TOKEN}/sendMessage"
+    )
+
+    # 텔레그램 메시지 길이 제한 대응
+    chunks = [
+        message[i:i + 3900]
+        for i in range(0, len(message), 3900)
+    ]
+
+    for chunk in chunks:
+
+        response = requests.post(
+            url,
+            json={
+                "chat_id": CHAT_ID,
+                "text": chunk
+            },
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not result.get("ok"):
+            raise RuntimeError(
+                f"텔레그램 전송 실패: {result}"
+            )
+
+    print("텔레그램 전송 성공!")
+
+
+# =====================================
+# 8. 메인 실행
+# =====================================
 
 def main():
-  stock_info = get_stock_data()
-  news_summary = get_translated_news()
 
-  # 텔레그램 메시지 구성
-  message = f"""📊 [미장 마감 & 해외 ETF 예상 리포트]
+    if not is_report_time():
+        return
 
-💱 마감 환율: {stock_info['exchange_rate']:,.2f}원
+    try:
 
-📈 보유 ETF 연동지수 및 예상 동향:
-🔹 KODEX 미국나스닥100
-   - 지수 등락: {stock_info['ndx_pct']:+.2f}%
+        print("ETF 데이터 수집 시작")
 
-🔹 TIGER 글로벌AI사이버보안
-   - 지수 등락: {stock_info['cibr_pct']:+.2f}%
+        stock_info = get_stock_data()
 
-📰 밤사이 미국 주요 증권 뉴스 (한글 번역):
-{news_summary}
-"""
+        print("뉴스 수집 시작")
 
-  # 텔레그램 API 전송
-  url = f'https://api.telegram.org/bot{TOKEN}/sendMessage'
-  payload = {'chat_id': CHAT_ID, '
+        news = get_translated_news()
+
+        message = create_message(
+            stock_info,
+            news
+        )
+
+        send_telegram(message)
+
+    except Exception as e:
+
+        print("실행 오류:", e)
+
+        send_telegram(
+            "⚠️ ETF 아침 리포트 오류\n\n"
+            f"오류 내용: {str(e)[:1000]}"
+        )
+
+
+if __name__ == "__main__":
+    main()
