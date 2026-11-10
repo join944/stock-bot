@@ -4,6 +4,7 @@ import re
 import html
 import requests
 import feedparser
+import time
 import yfinance as yf
 import pandas_market_calendars as mcal
 
@@ -208,6 +209,9 @@ def get_translated_news():
 
     news_list = []
 
+
+    import time
+
     for entry in feed.entries[:5]:
 
         title = entry.get("title", "제목 없음")
@@ -229,12 +233,16 @@ def get_translated_news():
                 title[:450]
             )
 
+            time.sleep(1)
+
             if description:
                 translated_description = translator.translate(
                     description[:450]
                 )
             else:
                 translated_description = ""
+
+            time.sleep(1)
 
         except Exception as e:
             print("번역 오류:", e)
@@ -247,7 +255,6 @@ def get_translated_news():
             f"  {translated_description[:250]}"
         )
 
-    return "\n\n".join(news_list)
 
 
 # =====================================
