@@ -163,11 +163,43 @@ def get_stock_data():
 # 5. 미국 증권 뉴스 수집 및 번역
 # =====================================
 
+
 def get_translated_news():
 
-    url = "https://finance.yahoo.com/news/rssindex"
+    url = "https://news.google.com/rss/search"
 
-    feed = feedparser.parse(url)
+    params = {
+        "q": "US stock market OR Nasdaq OR S&P 500 when:1d",
+        "hl": "en-US",
+        "gl": "US",
+        "ceid": "US:en"
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+
+        print("뉴스 수집 개수:", len(feed.entries))
+
+        if not feed.entries:
+            print("뉴스 RSS에 기사가 없습니다.")
+            return "• 최신 뉴스를 가져오지 못했습니다."
+
+    except Exception as e:
+        print("뉴스 수집 오류:", e)
+        return "• 뉴스 서버 연결에 실패했습니다."
 
     translator = GoogleTranslator(
         source="en",
@@ -180,9 +212,7 @@ def get_translated_news():
 
         title = entry.get("title", "제목 없음")
 
-        description = entry.get(
-            "summary", ""
-        )
+        description = entry.get("summary", "")
 
         description = re.sub(
             r"<[^>]+>",
@@ -192,14 +222,14 @@ def get_translated_news():
 
         description = html.unescape(
             description
-        )
+        ).strip()
 
         try:
             translated_title = translator.translate(
                 title[:450]
             )
 
-            if description.strip():
+            if description:
                 translated_description = translator.translate(
                     description[:450]
                 )
@@ -216,9 +246,6 @@ def get_translated_news():
             f"• {translated_title}\n"
             f"  {translated_description[:250]}"
         )
-
-    if not news_list:
-        return "• 최신 뉴스를 가져오지 못했습니다."
 
     return "\n\n".join(news_list)
 
