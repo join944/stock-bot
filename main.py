@@ -165,7 +165,10 @@ def get_stock_data():
 # =====================================
 
 
+
 def get_translated_news():
+
+    import time
 
     url = "https://news.google.com/rss/search"
 
@@ -194,13 +197,12 @@ def get_translated_news():
 
         print("뉴스 수집 개수:", len(feed.entries))
 
-        if not feed.entries:
-            print("뉴스 RSS에 기사가 없습니다.")
-            return "• 최신 뉴스를 가져오지 못했습니다."
-
     except Exception as e:
         print("뉴스 수집 오류:", e)
-        return "• 뉴스 서버 연결에 실패했습니다."
+        return "• 뉴스 수집에 실패했습니다."
+
+    if not feed.entries:
+        return "• 최신 뉴스를 가져오지 못했습니다."
 
     translator = GoogleTranslator(
         source="en",
@@ -209,14 +211,11 @@ def get_translated_news():
 
     news_list = []
 
-
-    import time
-
     for entry in feed.entries[:5]:
 
-        title = entry.get("title", "제목 없음")
+        title = entry.get("title") or "제목 없음"
 
-        description = entry.get("summary", "")
+        description = entry.get("summary") or ""
 
         description = re.sub(
             r"<[^>]+>",
@@ -233,27 +232,37 @@ def get_translated_news():
                 title[:450]
             )
 
+            if not translated_title:
+                translated_title = title
+
             time.sleep(1)
 
             if description:
                 translated_description = translator.translate(
                     description[:450]
                 )
-            else:
-                translated_description = ""
 
-            time.sleep(1)
+                if not translated_description:
+                    translated_description = description
+
+                time.sleep(1)
+            else:
+                translated_description = "기사 요약 없음"
 
         except Exception as e:
             print("번역 오류:", e)
 
             translated_title = title
-            translated_description = description
+            translated_description = (
+                description if description else "기사 요약 없음"
+            )
 
         news_list.append(
             f"• {translated_title}\n"
             f"  {translated_description[:250]}"
         )
+
+    return "\n\n".join(news_list)
 
 
 
