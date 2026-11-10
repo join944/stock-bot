@@ -166,6 +166,7 @@ def get_stock_data():
 
 
 
+
 def get_translated_news():
 
     import time
@@ -199,68 +200,70 @@ def get_translated_news():
 
     except Exception as e:
         print("뉴스 수집 오류:", e)
-        return "• 뉴스 수집에 실패했습니다."
+        return "• 뉴스 수집 실패"
 
     if not feed.entries:
         return "• 최신 뉴스를 가져오지 못했습니다."
-
-    translator = GoogleTranslator(
-        source="en",
-        target="ko"
-    )
 
     news_list = []
 
     for entry in feed.entries[:5]:
 
         title = entry.get("title") or "제목 없음"
+        original_title = html.unescape(title).strip()
 
-        description = entry.get("summary") or ""
-
-        description = re.sub(
-            r"<[^>]+>",
-            " ",
-            description
-        )
-
-        description = html.unescape(
-            description
-        ).strip()
+        translated_title = None
 
         try:
-            translated_title = translator.translate(
-                title[:450]
+            translate_url = (
+                "https://api.mymemory.translated.net/get"
             )
 
-            if not translated_title:
-                translated_title = title
+            translate_params = {
+                "q": original_title[:450],
+                "langpair": "en|ko"
+            }
 
-            time.sleep(1)
+            result = requests.get(
+                translate_url,
+                params=translate_params,
+                timeout=15
+            )
 
-            if description:
-                translated_description = translator.translate(
-                    description[:450]
+            result.raise_for_status()
+
+            data = result.json()
+
+            if str(data.get("responseStatus")) == "200":
+
+                translated_title = (
+                    data.get("responseData", {})
+                    .get("translatedText")
                 )
 
-                if not translated_description:
-                    translated_description = description
+                if translated_title:
+                    translated_title = html.unescape(
+                        translated_title
+                    ).strip()
 
-                time.sleep(1)
-            else:
-                translated_description = "기사 요약 없음"
+            if not translated_title:
+                print("번역 결과 없음: 원문 사용")
 
         except Exception as e:
-            print("번역 오류:", e)
+            print("번역 실패:", e)
 
-            translated_title = title
-            translated_description = (
-                description if description else "기사 요약 없음"
-            )
+        if translated_title:
+            final_title = translated_title
+            print("한국어 번역 성공")
+        else:
+            final_title = original_title
+            print("영어 원문으로 대체")
 
         news_list.append(
-            f"• {translated_title}\n"
-            f"  {translated_description[:250]}"
+            f"• {final_title}"
         )
+
+        time.sleep(1)
 
     return "\n\n".join(news_list)
 
