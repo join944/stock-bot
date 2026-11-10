@@ -41,9 +41,6 @@ FX_TICKER = "USDKRW=X"
 
 def is_report_time():
 
-    if os.environ.get("FORCE_RUN") == "1":
-        return True
-
     ny_time = datetime.now(
         ZoneInfo("America/New_York")
     )
@@ -59,24 +56,8 @@ def is_report_time():
         print("미국 증시 휴장일입니다.")
         return False
 
-    market_close = schedule.iloc[0]["market_close"]
-
-    expected_time = (
-        market_close.to_pydatetime()
-        .astimezone(ZoneInfo("America/New_York"))
-        + timedelta(minutes=15)
-    )
-
-    difference = (
-        ny_time - expected_time
-    ).total_seconds() / 60
-
-    if 0 <= difference <= 20:
-        return True
-
-    print("아직 발송 시간이 아닙니다.")
-    return False
-
+    print("미국 증시 거래일 확인 완료")
+    return True
 
 # =====================================
 # 3. 주가 데이터 수집
